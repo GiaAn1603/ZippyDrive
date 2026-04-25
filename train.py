@@ -25,12 +25,14 @@ def parse_arguments():
     model_group.add_argument("--img_width", type=int, default=640, help="Target image width")
     model_group.add_argument("--num_classes", type=int, default=2, help="Segmentation classes")
     model_group.add_argument("--lane_class_id", type=int, default=1, help="Class ID for lanes")
+    model_group.add_argument("--resume", type=str, default="", help="Resume from checkpoint")
 
     opt_group = parser.add_argument_group("Optimization Strategy")
     opt_group.add_argument("--epochs", type=int, default=100, help="Total epochs")
     opt_group.add_argument("--batch_size", type=int, default=16, help="Batch size")
     opt_group.add_argument("--learning_rate", type=float, default=5e-4, help="Learning rate")
     opt_group.add_argument("--weight_decay", type=float, default=5e-4, help="Weight decay")
+    opt_group.add_argument("--patience", type=int, default=10, help="Early stopping patience")
 
     args, _ = parser.parse_known_args()
 
@@ -47,6 +49,8 @@ def main():
     best_da_miou = 0.0
     best_ll_iou = 0.0
     best_ll_acc = 0.0
+    patience_counter = 0
+    start_epoch = 1
 
     print("[DATA] Loading BDD100K multi-task dataset...")
     train_loader = DataLoader(
@@ -73,8 +77,26 @@ def main():
     scheduler = CosineAnnealingLR(optimizer=optimizer, T_max=args.epochs, eta_min=1e-6)
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
 
+    if args.resume and os.path.exists(args.resume):
+        print(f"[RESUME] Loading checkpoint from: {args.resume}")
+        checkpoint = torch.load(args.resume, map_location=device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+
+        start_epoch = checkpoint.get("epoch", 0) + 1
+        best_mean_iou = checkpoint.get("mean_iou", 0.0)
+        best_da_miou = checkpoint.get("da_miou", 0.0)
+        best_ll_iou = checkpoint.get("ll_iou", 0.0)
+        best_ll_acc = checkpoint.get("ll_acc", 0.0)
+        patience_counter = checkpoint.get("patience_counter", 0)
+
+        print(f"[RESUME] Success: Continuing from Epoch {start_epoch} (Best Mean IoU: {best_mean_iou:.4f}, LR: {optimizer.param_groups[0]['lr']:.6f})")
+    elif args.resume:
+        print(f"[WARN] Resume path not found: {args.resume}. Starting from scratch.")
+
     print("[TRAIN] Beginning training process...")
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch, args.epochs + 1):
         print(f"\n--- Epoch [{epoch}/{args.epochs}] ---")
 
         average_train_loss = train_one_epoch(
@@ -110,27 +132,39 @@ def main():
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
                 "mean_iou": best_mean_iou,
                 "da_miou": da_miou,
                 "ll_acc": ll_acc,
                 "ll_iou": ll_iou,
                 "train_loss": average_train_loss,
+                "patience_counter": patience_counter,
             }
             torch.save(checkpoint, save_path)
             print(f"[SAVE] New Best Mean IoU: {best_mean_iou:.4f} -> {save_path}")
+            patience_counter = 0
+        else:
+            patience_counter += 1
+            print(f"[EARLY STOPPING] Patience: {patience_counter}/{args.patience}")
 
-    last_save_path = os.path.join(args.save_dir, "last_zippydrive_model.pth")
-    last_checkpoint = {
-        "epoch": epoch,
-        "model_state_dict": model.state_dict(),
-        "optimizer_state_dict": optimizer.state_dict(),
-        "mean_iou": best_mean_iou,
-        "da_miou": da_miou,
-        "ll_acc": ll_acc,
-        "ll_iou": ll_iou,
-        "train_loss": average_train_loss,
-    }
-    torch.save(last_checkpoint, last_save_path)
+        last_save_path = os.path.join(args.save_dir, "last_zippydrive_model.pth")
+        last_checkpoint = {
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
+            "mean_iou": best_mean_iou,
+            "da_miou": da_miou,
+            "ll_acc": ll_acc,
+            "ll_iou": ll_iou,
+            "train_loss": average_train_loss,
+            "patience_counter": patience_counter,
+        }
+        torch.save(last_checkpoint, last_save_path)
+
+        if patience_counter >= args.patience:
+            print(f"[STOP] Early stopping at epoch {epoch}")
+            break
 
     print("\n" + "=" * 50)
     print(f"{'TRAINING COMPLETED':^50}")
