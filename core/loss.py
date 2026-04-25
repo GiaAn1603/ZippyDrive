@@ -259,7 +259,7 @@ class SingleLoss(nn.Module):
         focal_alpha, focal_gamma = hyperparams["alpha3"], hyperparams["gamma3"]
 
         if task == "DA":
-            self.seg_tver = TverskyLoss(
+            self.tver = TverskyLoss(
                 mode=MULTICLASS_MODE,
                 alpha=tversky_da_alpha,
                 beta=1.0 - tversky_da_alpha,
@@ -268,7 +268,7 @@ class SingleLoss(nn.Module):
             )
 
         if task == "LL":
-            self.seg_tver = TverskyLoss(
+            self.tver = TverskyLoss(
                 mode=MULTICLASS_MODE,
                 alpha=tversky_ll_alpha,
                 beta=1.0 - tversky_ll_alpha,
@@ -276,15 +276,19 @@ class SingleLoss(nn.Module):
                 from_logits=True,
             )
 
-        self.seg_focal = FocalLossSeg(mode=MULTICLASS_MODE, alpha=focal_alpha, gamma=focal_gamma)
+        self.focal = FocalLossSeg(mode=MULTICLASS_MODE, alpha=focal_alpha, gamma=focal_gamma)
 
     def forward(self, outputs, targets):
         targets = targets.long()
-        tversky_loss = self.seg_tver(outputs, targets)
-        focal_loss = self.seg_focal(outputs, targets)
+        tversky_loss = self.tver(outputs, targets)
+        focal_loss = self.focal(outputs, targets)
         total_loss = focal_loss + tversky_loss
 
-        return total_loss, focal_loss.item(), tversky_loss.item()
+        return {
+            "total": total_loss,
+            "focal": focal_loss,
+            "tversky": tversky_loss,
+        }
 
 
 class TotalLoss(nn.Module):
@@ -305,21 +309,21 @@ class TotalLoss(nn.Module):
         tversky_ll_alpha, tversky_ll_gamma = (hyperparams["alpha2"], hyperparams["gamma2"])
         focal_alpha, focal_gamma = hyperparams["alpha3"], hyperparams["gamma3"]
 
-        self.seg_tver_da = TverskyLoss(
+        self.tver_da = TverskyLoss(
             mode=MULTICLASS_MODE,
             alpha=tversky_da_alpha,
             beta=1.0 - tversky_da_alpha,
             gamma=tversky_da_gamma,
             from_logits=True,
         )
-        self.seg_tver_ll = TverskyLoss(
+        self.tver_ll = TverskyLoss(
             mode=MULTICLASS_MODE,
             alpha=tversky_ll_alpha,
             beta=1.0 - tversky_ll_alpha,
             gamma=tversky_ll_gamma,
             from_logits=True,
         )
-        self.seg_focal = FocalLossSeg(mode=MULTICLASS_MODE, alpha=focal_alpha, gamma=focal_gamma)
+        self.focal = FocalLossSeg(mode=MULTICLASS_MODE, alpha=focal_alpha, gamma=focal_gamma)
 
     def forward(self, outputs, targets):
         out_da, out_ll = outputs
@@ -328,14 +332,18 @@ class TotalLoss(nn.Module):
         target_da = target_da.long()
         target_ll = target_ll.long()
 
-        tversky_da_loss = self.seg_tver_da(out_da, target_da)
-        tversky_ll_loss = self.seg_tver_ll(out_ll, target_ll)
+        loss_tver_da = self.tver_da(out_da, target_da)
+        loss_tver_ll = self.tver_ll(out_ll, target_ll)
 
-        focal_da_loss = self.seg_focal(out_da, target_da)
-        focal_ll_loss = self.seg_focal(out_ll, target_ll)
+        loss_focal_da = self.focal(out_da, target_da)
+        loss_focal_ll = self.focal(out_ll, target_ll)
 
-        tversky_loss = tversky_da_loss + tversky_ll_loss
-        focal_loss = focal_da_loss + focal_ll_loss
+        tversky_loss = loss_tver_da + loss_tver_ll
+        focal_loss = loss_focal_da + loss_focal_ll
         total_loss = focal_loss + tversky_loss
 
-        return total_loss, focal_loss.item(), tversky_loss.item()
+        return {
+            "total": total_loss,
+            "focal": focal_loss,
+            "tversky": tversky_loss,
+        }
